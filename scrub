@@ -1,0 +1,124 @@
+#!/usr/bin/env python
+
+"""Scrub script for removing PII
+
+Removes personal identifying information (PII) specified in a sensitive_fields
+input file, from a specified input JSON file. Writes cleaned data to `output.json`.
+
+NOTE: A Windows testing environment was not available, so additional testing
+may be needed to ensure cross-platform compatibility.
+
+"""
+
+import argparse
+import builtins
+import json
+import re
+from typing import Any
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="PII Scrub",
+        description="Produces an output.json file from provided input JSON file, with personal identifying information removed.",
+    )
+    parser.add_argument("sensitive_fields_file", default="sensitive_fields.txt", help="File with newline-separated list of sensitive fields")
+    parser.add_argument("input_file", default="input.json", help="JSON file of input data to be scrubbed")
+
+    args = parser.parse_args()
+    fields_file, input_file = vars(args).values()
+
+    sensitive_fields = get_sensitive_fields(fields_file)
+    output = scrub(get_input(input_file), sensitive_fields)
+    write_output(output)
+
+
+def get_sensitive_fields(fields_file: str) -> None:
+    try:
+        with open(fields_file) as f:
+            sensitive_fields = f.read().splitlines()
+    except IOError as e:
+        print(f"Scrub failed. Could not open file: {fields_file}, failed with error: {e}")
+        quit()
+
+    return sensitive_fields
+
+def get_input(input_file: str) -> None:
+    try:
+        with open(input_file) as f:
+            data = json.load(f)
+    except (IOError, ValueError) as e:
+        print(f"Scrub failed. Could not open file: {input_file}, failed with error: {e}")
+        quit()
+
+    return data
+
+def write_output(data: dict) -> None:
+    try:
+        with open("output.json", "w") as f:
+            try:
+                json.dump(data, f)
+            except (IOError, OSError, TypeError) as e:
+                print(f"Error writing output data to file with data: {data}, failed with error: {e}")
+                quit()
+    except (PermissionError, OSError) as e:
+        print(f"Error writing output data to file: {e}")
+        quit()
+
+# Iterate over all keys and values in provided data, cleaning sensitive data
+# as specified in README.md
+def scrub(data: dict, sensitive_fields: list) -> dict:
+    output = {}
+    for k, v in data.items():
+        output_value = v
+
+        # First scrub any sensitive fields in top-level data, and continue iterating,
+        # skipping type checks below
+        if k in sensitive_fields:
+            # Nested objects within sensitive keys need to be scrubbed entirely
+            if type(v) == dict:
+                output_value = scrub_all(v)
+            else:
+                output_value = clean(v)
+            output[k] = output_value
+            continue
+
+        # Nested objects should be checked for sensitive fields
+        if type(v) == dict:
+            output_value = scrub(v, sensitive_fields)
+
+        # Nested objects in a list also need to be checked
+        if type(v) == list:
+            output_value = [scrub(item, sensitive_fields) if type(item) == dict else item for item in v]
+
+        output[k] = output_value
+
+    return output
+
+# Cleans values for all keys in data
+def scrub_all(data: dict) -> dict:
+    cleaned = {}
+    for k, v in data.items():
+        cleaned[k] = clean(v)
+    return cleaned
+
+# Returns cleaned value based on specifications in README.md
+def clean(value: Any) -> Any:
+    match type(value):
+        case builtins.str:
+            return re.sub(r"[a-zA-Z0-9]", "*", value)
+        case builtins.float | builtins.int:
+            return re.sub(r"[a-zA-Z0-9]", "*", str(value))
+        case builtins.bool:
+            return "-"
+        case builtins.list:
+            return [clean(val) for val in value]
+        case builtins.dict:
+            for k, v in value.items():
+                value[k] = clean(v)
+            return value
+        case _:
+            return value
+
+if __name__ == "__main__":
+    main()
